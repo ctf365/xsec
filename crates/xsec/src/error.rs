@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::{protector::XSecProtectorError, storage::XSecStorageError};
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum XSecError {
@@ -19,28 +21,6 @@ pub enum XSecError {
     Destroyed,
     #[error("XSec is already unlocked")]
     AlreadyUnlocked,
-    #[error("authentication failed")]
-    AuthenticationFailed,
-    #[error("Windows Hello is not supported")]
-    WindowsHelloNotSupported,
-    #[error("Windows Hello is not configured")]
-    WindowsHelloNotConfigured,
-    #[error("the cryptographic provider does not support required user verification")]
-    ProviderNotSupported,
-    #[error("user verification is required")]
-    UserVerificationRequired,
-    #[error("system protector is unavailable on this platform")]
-    SystemProtectorUnavailable,
-    #[error("system authentication is not configured")]
-    SystemAuthenticationNotConfigured,
-    #[error("system protector is incompatible with this platform")]
-    IncompatibleSystemProtector,
-    #[error("system key was not found")]
-    SystemKeyNotFound,
-    #[error("system key was invalidated")]
-    SystemKeyInvalidated,
-    #[error("system authentication was cancelled")]
-    AuthenticationCancelled,
     #[error("XSec metadata is corrupted")]
     Corrupted,
     #[error("ciphertext is invalid")]
@@ -55,38 +35,12 @@ pub enum XSecError {
     ProtectorAlreadyExists,
     #[error("the last key protector cannot be removed")]
     LastProtector,
-    #[error("storage error: {source}")]
-    Storage {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-    #[error("key protector error: {source}")]
-    Protector {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    #[error(transparent)]
+    Storage(#[from] XSecStorageError),
+    #[error(transparent)]
+    Protector(#[from] XSecProtectorError),
     #[error("cryptographic operation failed")]
     Crypto,
-}
-
-impl XSecError {
-    #[cfg(feature = "file-storage")]
-    pub(crate) fn storage<E>(source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Storage {
-            source: Box::new(source),
-        }
-    }
-
-    #[cfg(feature = "password-protector")]
-    pub(crate) fn protector<E>(source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Protector {
-            source: Box::new(source),
-        }
-    }
 }
 
 pub type XSecResult<T> = Result<T, XSecError>;

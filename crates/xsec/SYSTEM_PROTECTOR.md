@@ -4,12 +4,17 @@
 
 `XSecSystemProtector` 使用当前操作系统提供的密钥保护能力包装和解包 DEK。调用方只依赖一个公开类型，不感知 Keychain、Android Keystore、Windows CNG 等底层模型。
 
-`XSecSystemProtector` 在所有平台上遵守同一条安全语义：
+`XSecSystemProtector` 在所有平台上遵守以下安全语义：
 
-- DEK 只以 wrapped key 形式进入 metadata。
-- 系统侧持久化密钥不可导出。
+- metadata 不得包含明文 DEK。
 - 解包 DEK 时必须由系统验证当前用户。
 - 平台无法满足这些条件时返回明确错误，不得降级到更弱的保护方式。
+
+持久化能力由平台决定。Windows 使用不可导出的 Windows Hello Credential 包装
+DEK；macOS 使用受 Touch ID 约束的 Secure Enclave P-256 私钥执行 ECDH 并包装
+DEK；Linux 参考 Bitwarden Desktop 的语义，只在当前 protector 实例的受保护内存中
+保存 DEK。Linux 进程退出或 protector 被重新创建后，该密钥不可恢复，
+`unwrap_key` 在完成用户验证后返回 `XSecProtectorError::KeyNotFound`。
 
 密码回退由调用方通过 `XSecPasswordProtector` 单独配置，`XSecSystemProtector` 不自动切换保护器。
 
@@ -25,14 +30,14 @@ pub trait XSecProtector: Send + Sync {
         &'a self,
         key: &'a SecretBox<[u8; 32]>,
     ) -> impl Future<
-        Output = XSecResult<Vec<u8>>,
+        Output = XSecProtectorResult<Vec<u8>>,
     > + Send + 'a;
 
     fn unwrap_key<'a>(
         &'a self,
         payload: &'a [u8],
     ) -> impl Future<
-        Output = XSecResult<SecretBox<[u8; 32]>>,
+        Output = XSecProtectorResult<SecretBox<[u8; 32]>>,
     > + Send + 'a;
 }
 ```
@@ -54,12 +59,17 @@ impl XSecSystemProtector {
     /// backend 可创建并立即释放非持久化探测密钥。
     pub async fn check_availability(
         &self,
-    ) -> XSecResult<()>;
+    ) -> XSecProtectorResult<()>;
 
-    /// 删除该 identity 对应的 Windows Hello Credential。
+    /// 删除该 identity 对应的系统密钥。
     ///
     /// 删除是幂等的；对象不存在时返回成功。
-    pub async fn delete(&self) -> XSecResult<()>;
+    pub async fn delete(&self) -> XSecProtectorResult<()>;
+}
+
+impl<S: XSecStorage> XSec<S> {
+    /// 从已加载的 system protector payload 恢复 identity 并解锁。
+    pub async fn unlock_system(&mut self) -> XSecResult<()>;
 }
 
 impl XSecProtector for XSecSystemProtector {
@@ -84,24 +94,27 @@ pub use protector::XSecSystemProtector;
 
 `identity` 是当前 XSec Storage 对应的稳定逻辑身份：
 
-- 相同 Storage 必须始终使用相同 `identity`。
+- 创建 Storage 时必须提供稳定且唯一的 `identity`。
+- 后续解锁从 system protector payload 恢复 identity 哈希，不再要求调用方提供原始值。
 - 不同 Storage 应使用不同 `identity`。
 - `identity` 不是用户身份、认证凭据或秘密。
 - 调用方不需要遵守平台原生密钥的命名限制。
 - `identity` 不得包含依赖显示文案或运行时随机值等不稳定内容。
 
-实现不得直接使用原始 `identity` 作为平台密钥名称。平台密钥名称按以下方式派生：
+实现不得直接使用原始 `identity` 作为平台密钥名称。构造时先计算固定长度的内部
+`identity`，后续逻辑只使用该值：
 
 ```text
-platform_key_id =
-    hex(SHA256(
-        "xsec:system-protector:v1"
-        || u32_be(identity.length)
-        || identity
-    ))
+identity = SHA256(
+    "xsec:system-protector"
+    || u32_be(input.length)
+    || input
+)
+platform_key_id = "xsec-system-" || hex(identity)
 ```
 
-长度字段使用无符号大端编码。当前实现限制 `identity` 最多为 4096 个 UTF-8 字节，超出时构造函数会拒绝继续。metadata 和系统密钥名称中都不保存原始 `identity`。
+长度字段使用无符号大端编码。调用方传入的 `identity` 最多为 4096 个 UTF-8 字节，
+超出时构造函数会拒绝继续。metadata 和系统密钥名称中都不保存原始值。
 
 ## 平台分发
 
@@ -109,18 +122,22 @@ platform_key_id =
 
 ```rust
 mod system {
-    #[cfg(target_vendor = "apple")]
-    mod apple;
+    #[cfg(target_os = "macos")]
+    mod macos;
 
     #[cfg(target_os = "android")]
     mod android;
+
+    #[cfg(target_os = "linux")]
+    mod linux;
 
     #[cfg(target_os = "windows")]
     mod windows;
 
     #[cfg(not(any(
-        target_vendor = "apple",
+        target_os = "macos",
         target_os = "android",
+        target_os = "linux",
         target_os = "windows",
     )))]
     mod unsupported;
@@ -131,7 +148,7 @@ mod system {
 
 各平台依赖必须放在对应的 Cargo target dependency 下。`system-protector` 是唯一公开 feature，调用方不选择具体 backend。
 
-不支持的平台仍可构造 `XSecSystemProtector`，但 `check_availability`、`wrap_key` 和 `unwrap_key` 必须返回 `XSecError::SystemProtectorUnavailable`。不得使用 `XSecError::Crypto` 表示平台不支持。
+不支持的平台仍可构造 `XSecSystemProtector`，但 `check_availability`、`wrap_key` 和 `unwrap_key` 必须返回 `XSecProtectorError::Unavailable`。不得使用 `XSecProtectorError::Internal` 表示平台不支持。
 
 移动平台需要宿主运行时或 UI context 时，由平台绑定层在 crate 内部处理。原生 Activity、窗口句柄和认证对象不得进入公共 API。
 
@@ -143,56 +160,74 @@ mod system {
 kind = "system"
 ```
 
-平台差异写入私有 payload envelope：
+Windows 使用以下私有 payload envelope：
 
 ```text
-magic                  [4 bytes] = "XSSP"
-format_version         u16 big-endian = 1
-backend_id             u16 big-endian
-identity_hash          [32 bytes]
-backend_payload_length u32 big-endian
-backend_payload        [backend_payload_length bytes]
+magic                  [6 bytes] = "XSecSP"
+format_version         u16 big-endian = 2
+identity               [32 bytes]
+persistent_challenge   [16 bytes]
+hkdf_salt              [32 bytes]
+nonce                  [12 bytes]
+wrapped_dek            [48 bytes] (AES-256-GCM ciphertext + tag)
 ```
 
-`identity_hash` 使用与平台密钥名称相同的长度分帧输入计算。解析器必须拒绝未知版本、未知 backend、字段截断、长度溢出和 payload 后的额外数据。
+Windows v2 payload 固定为 148 字节：
 
-`backend_payload` 必须绑定以下内容的完整性：
+```text
+6 + 2 + 32 + 16 + 32 + 12 + 48 = 148 bytes
+```
 
-- envelope 版本和 backend 标识。
-- `identity_hash`。
-- 包装算法及其参数。
-- 系统密钥引用。
+`identity` 是构造时对调用方输入计算出的 SHA-256 值。解析器必须拒绝未知版本、
+字段截断和 payload 后的额外数据。148 字节格式是 Windows v2 的正式格式，不兼容
+未包含 `hkdf_salt` 的 116 字节草案。
+
+AES-256-GCM 的 AAD 是从 magic 到 nonce 结束的完整 header，必须绑定以下内容的完整性：
+
+- envelope 版本。
+- `identity`。
+- persistent challenge、HKDF salt 和 nonce。
 - wrapped DEK。
 
-Windows Hello backend 的 `backend_payload` 还必须包含以下字段：
+Windows backend 当前使用 16 字节随机 persistent challenge，与 `biometric/`
+参考实现一致。每次包装还会生成独立的 32 字节 HKDF salt 和 12 字节 GCM nonce。
+完整 envelope header 都作为 AES-256-GCM AAD；wrapped DEK 本身由 GCM tag 认证。
+
+macOS 使用独立的固定长度 payload：
 
 ```text
-signature_algorithm       u16 big-endian (1 = RSASSA-PKCS1-v1_5 with SHA-256)
-kdf_algorithm             u16 big-endian (1 = HKDF-SHA-256)
-aead_algorithm            u16 big-endian (1 = AES-256-GCM)
-public_key_blob_length    u32 big-endian
-public_key_blob           [public_key_blob_length bytes]
-challenge_length          u16 big-endian
-persistent_challenge      [challenge_length bytes]
-nonce_length              u8
-nonce                     [nonce_length bytes]
-wrapped_dek_length        u32 big-endian
-wrapped_dek               [wrapped_dek_length bytes]
+magic                  [6 bytes] = "XSecMP"
+format_version         u16 big-endian = 1
+identity               [32 bytes]
+recipient_key_hash     [32 bytes]
+ephemeral_public_key   [65 bytes]
+hkdf_salt              [32 bytes]
+nonce                  [12 bytes]
+wrapped_dek            [48 bytes] (AES-256-GCM ciphertext + tag)
 ```
 
-`public_key_blob` 来自首次创建 Credential 后的
-`RetrievePublicKeyWithDefaultBlobType()`。公钥不是秘密，但必须与
-`identity_hash`、backend、签名算法和 payload 版本一起认证保存。后续操作不得
-重新读取公钥后直接信任；如果当前 Credential 的公钥与 payload 不一致，必须返回
-`XSecError::SystemKeyInvalidated`。
+`ephemeral_public_key` 使用 ANSI X9.63 未压缩 P-256 格式 `04 || X || Y`。
+`recipient_key_hash` 是 Secure Enclave 公钥编码的 SHA-256，用于在解包前识别系统
+密钥是否已被替换。完整 header 作为 AES-256-GCM AAD。
 
-Windows backend 当前使用 16 字节随机 persistent challenge，与 `biometric/`
-参考实现一致。完整 envelope header 与 Windows backend header（包括密文长度）都作为
-AES-256-GCM AAD；wrapped DEK 本身由 GCM tag 认证。
+metadata 移到其他操作系统后，当前 backend 无法处理原 payload 时返回 `XSecProtectorError::Incompatible`。调用方可使用其他 Protector 解锁，再替换 `system` 记录。
 
-metadata 移到其他操作系统后，当前 backend 无法处理原 payload 时返回 `XSecError::IncompatibleSystemProtector`。调用方可使用其他 Protector 解锁，再替换 `system` 记录。
+当前 metadata 最多保存一个 `kind = "system"` 的记录，与单设备、单写者约束保持一致。多设备同时保留多个系统保护器不在当前范围内。
 
-v1 的 metadata 最多保存一个 `kind = "system"` 的记录，与单设备、单写者约束保持一致。多设备同时保留多个系统保护器不在 v1 范围内。
+Linux 使用不含密钥材料的固定长度 marker：
+
+```text
+magic                  [6 bytes] = "XSecLP"
+format_version         u16 big-endian = 1
+identity               [32 bytes]
+key_id                 [16 bytes]
+```
+
+Linux marker 只把 metadata 记录绑定到当前 identity，并标识其平台来源。实际 DEK
+只存在于当前 `XSecSystemProtector` 的受保护内存中。随机 `key_id` 将 marker
+绑定到该实例当前保存的 DEK；再次调用 `wrap_key` 会替换 DEK 并使旧 marker 返回
+`XSecProtectorError::KeyInvalidated`。各平台 parser 识别到另一平台的 magic 时返回
+`XSecProtectorError::Incompatible`。
 
 ## 操作语义
 
@@ -207,43 +242,61 @@ v1 的 metadata 最多保存一个 `kind = "system"` 的记录，与单设备、
 - 当前平台是否有可用 backend。
 - 系统密钥服务是否可用。
 - 用户是否配置了满足要求的本地验证方式。
-- backend 是否能够提供不可导出的持久化密钥。
+- backend 是否能够提供该平台承诺的密钥存储能力。
 
 该方法不得创建或修改持久化系统密钥，也不得触发用户认证。平台没有只读 capability API 时，backend 可创建并立即释放非持久化探测密钥，以验证硬件密钥和认证策略的创建能力。检查结果可能在返回后失效，`wrap_key` 和 `unwrap_key` 必须独立验证前置条件。
 
 ### wrap_key
 
-Windows Hello backend 的首次创建流程为：
+Windows Hello backend 的流程为：
 
 ```text
 创建或打开 KeyCredential
-    ↓
-RetrievePublicKeyWithDefaultBlobType()
-    ↓
-保存公钥 blob、签名算法和 identity_hash
     ↓
 生成持久化随机 challenge
     ↓
 RequestSignAsync(challenge)
     ↓
-SHA-256(signature) 后使用 HKDF-SHA-256 派生 KEK
+SHA-256(signature) 得到 PRF
+    ↓
+使用随机 salt、identity 和固定域分隔串执行 HKDF-SHA-256
     ↓
 使用 AES-256-GCM 包装 DEK
 ```
 
 `wrap_key` 必须在 `RequestSignAsync` 返回 `Success` 并得到非空签名后才允许产生最终
-payload。Windows Hello 自己持有私钥并执行签名；XSec 不将返回的公钥 blob 重新导入
-本地 CNG，仅将公钥保存为 Credential 变更检测值。
+payload。Windows Hello 自己持有私钥并执行签名。
 
 Windows Hello 私钥不得导出到 Rust 内存。由签名派生的 KEK 只允许在一次
 wrap/unwrap 调用期间短暂存在于 Rust 内存，并必须使用 `Zeroizing` 清理。
+WinRT 签名数组在计算 PRF 后原地清零，不复制到普通 `Vec<u8>`。
+
+KEK 的派生规则固定为：
+
+```text
+PRF = SHA256(signature)
+KEK = HKDF-SHA256(
+    salt = hkdf_salt,
+    ikm = PRF,
+    info = "xsec:windows-hello:kek" || identity,
+)
+```
+
+`hkdf_salt` 每次包装时随机生成并随 envelope 保存，不要求保密。`identity` 通过
+HKDF info 绑定当前 Storage，并与域隔离字符串共同参与 KEK 派生。
+
+算法由 envelope version 唯一确定，不在 payload 中增加可协商算法字段。
 
 ### unwrap_key
 
-`unwrap_key` 严格解析 payload，核对 `identity_hash`、backend、公钥 blob 和签名算法，随后执行：
+显式构造的 Protector 在 `unwrap_key` 中严格解析 payload，并核对 envelope 和
+identity hash。`XSec::unlock_system` 从同一 payload 恢复 identity hash，构造平台
+Protector 后复用相同的解包和 metadata MAC 校验流程。
+
+Windows 随后执行：
 
 ```text
-解析 XSSP payload
+解析 XSecSP payload
     ↓
 读取 payload 中的 persistent challenge
     ↓
@@ -256,8 +309,8 @@ Windows Hello 返回成功的 signature
 使用 AES-256-GCM 解包 DEK
 ```
 
-不得把签名结果直接当作 DEK。公钥 blob 仅用于检测 Credential 是否被删除后
-重新创建；Windows Hello 的签名操作本身由系统 Credential provider 执行。
+不得把签名结果直接当作 DEK。Windows Hello 的签名操作本身由系统 Credential
+provider 执行。
 
 用户验证必须约束实际的解包操作。不得先执行一个独立的认证或签名请求，再使用不受该次认证约束的另一把密钥解包。
 
@@ -265,34 +318,159 @@ Windows 实现不得另建可独立调用 `NCryptDecrypt` 的 CNG 包装密钥�
 签名经 SHA-256 和 HKDF-SHA-256 派生 KEK，使用户验证与 DEK 解包形成密码学绑定。
 `NCRYPT_UI_POLICY` 或通用 CNG 密钥保护界面不等同于 Windows Hello。
 
+XSec 不区分 key 是否已经存在于进程内存，也不实现 Bitwarden 的 AFU 临时解锁路径。
+每次 `wrap_key` 和 `unwrap_key` 都统一执行 Windows Hello `RequestSignAsync`，再派生
+KEK 并包装或解包 DEK。进程内 secure memory 属于上层调用方的职责。
+
 Windows WinRT 操作使用真正的 Rust async 等待，不在异步 API 内调用阻塞式 `.get()`。
+
+## macOS backend
+
+macOS backend 为每个 identity 创建独立的 Secure Enclave P-256 私钥。私钥保存在
+Data Protection Keychain 中，并使用
+`kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` 和
+`kSecAccessControlPrivateKeyUsage | kSecAccessControlBiometryCurrentSet`。
+不得使用允许系统密码或 Apple Watch 回退的 `userPresence` 策略。
+
+`wrap_key` 生成一次性软件 P-256 密钥，并使用 Secure Enclave 私钥与该一次性公钥
+执行 ECDH。包装和解包都要求用户认证，避免在生物识别集合变化后继续使用已经无法
+解锁的旧公钥生成新 payload：
+
+```text
+Secure Enclave private key + ephemeral public key
+    ↓ ECDH P-256
+shared secret
+    ↓ HKDF-SHA256
+KEK
+    ↓ AES-256-GCM
+wrapped DEK
+```
+
+`unwrap_key` 使用 payload 中的一次性公钥与 Secure Enclave 私钥执行 ECDH。该私钥
+操作由 Keychain access control 直接约束并触发 Touch ID，不能先执行独立的布尔认证
+再使用不受认证约束的解密密钥。
+
+KEK 派生规则固定为：
+
+```text
+KEK = HKDF-SHA256(
+    salt = hkdf_salt,
+    ikm = ecdh_shared_secret,
+    info = "xsec:macos-secure-enclave:kek"
+        || identity
+        || recipient_key_hash,
+)
+```
+
+原始 ECDH shared secret 和 KEK 只在单次调用期间存在，并使用 `Zeroizing` 清理。
+Security.framework 阻塞调用通过私有工作线程执行，不依赖调用方使用特定 async
+runtime。
+
+macOS Secure Enclave 需要受支持的硬件、登录用户会话、Data Protection Keychain
+以及正确签名并由 provisioning profile 授权的 application identifier。普通未签名
+CLI、`sudo` 启动的非用户上下文和 LaunchDaemon 不保证可用，且不得回退到普通
+Keychain 软件密钥。
+
+宿主可执行文件必须使用包含 `com.apple.application-identifier` entitlement 的
+provisioning profile 完成签名。`cargo run` 生成的 ad-hoc 签名二进制不满足该条件；
+库无法在运行时为宿主补充 entitlement。缺少授权或 Secure Enclave 不可用时返回
+`XSecProtectorError::Unavailable`。
+
+解包已有 macOS payload 时，如果对应的 Secure Enclave 私钥已删除或因访问控制策略
+失效而无法再被 Keychain 找到，返回 `XSecProtectorError::KeyInvalidated`。系统明确返回
+的认证失败仍保留为 `XSecProtectorError::AuthenticationFailed`，避免根据不可区分的状态码
+猜测指纹集合是否发生变化。
+
+## Linux backend
+
+Linux backend 参考 Bitwarden Desktop 的临时系统解锁模型：
+
+```text
+wrap_key
+    ↓
+将 DEK 复制到 SecureArray
+    ↓
+SecureArray 在 Linux 上优先使用 memfd_secret
+    ↓
+metadata 只写入 XSecLP marker
+```
+
+`SecureArray` 在不支持 `memfd_secret` 的内核上使用受 `mprotect` 保护的内存，并尝试
+通过 `mlock` 和 `MADV_DONTDUMP` 避免交换与 core dump。该回退不提供
+`memfd_secret` 对内核内存映射的额外隔离保证。
+
+Linux `unwrap_key` 的顺序固定为：
+
+```text
+严格解析 XSecLP marker 并核对 identity
+    ↓
+通过 system D-Bus 请求 polkit action com.xsec.XSec.unlock
+    ↓
+授权成功后短暂打开 SecureArray
+    ↓
+复制 DEK 到 SecretBox
+```
+
+每次 `unwrap_key` 都请求 polkit 授权。优先使用当前 system bus unique name 构造
+`system-bus-name` subject，避免 sandbox PID namespace 不一致；无法取得 unique name
+时回退到 `unix-process` subject。
+
+Linux 不将 DEK 或 KEK 写入 Secret Service、文件、keyring 等持久化存储。
+`delete` 只清除当前实例的受保护内存，且保持幂等。进程退出、实例销毁或重新创建
+protector 后，原 marker 无法恢复 DEK；`unwrap_key` 在用户验证成功后返回
+`XSecProtectorError::KeyNotFound`。
+
+应用必须安装仓库提供的 `polkit/com.xsec.XSec.policy`，并确保桌面会话中运行可用的
+polkit authentication agent。策略使用 `auth_self`，不保留跨调用授权；缺少 action
+时 `check_availability` 返回 `XSecProtectorError::NotConfigured`。
 
 ### 兼容性
 
-当前实现写入统一 `XSSP` envelope v1，Windows backend id 为 1。此前实验版本直接
-写入的 Windows v2/v3/v4 payload 不属于稳定格式，不自动迁移；遇到这些数据时返回
-格式错误或不支持版本。调用方需要先通过其他 Protector 解锁并重新添加 system
-protector，或者明确删除旧 metadata 与旧 Credential 后重新注册。
+Windows 只读写固定 148 字节的 `XSecSP` envelope v2，macOS 只读写 `XSecMP`
+envelope v1，Linux 只读写 `XSecLP` marker v1。各 backend 对其他平台格式返回
+`XSecProtectorError::Incompatible`，对自身格式的其他版本返回
+`XSecProtectorError::Unsupported`。
 
 Windows Hello PRF 遵循 `biometric/` 参考实现：对持久化 challenge 请求签名，再对
 签名做 SHA-256。该设计依赖同一 Credential 对同一 challenge 产生稳定签名；发布前
-必须在目标 Windows 版本上完成首次注册、进程重启后解锁以及绕过测试。
+必须在目标 Windows 版本上完成首次注册和进程重启后解锁测试。
+
+Windows envelope 编解码、KDF 和 AEAD 位于 Windows backend 内，测试覆盖 round
+trip、错误签名、错误 identity、header/ciphertext 篡改、截断、尾随数据、未知版本
+以及随机 salt/nonce。Windows Hello 的交互、签名稳定性和真实设备行为仍必须在
+Windows 真机验证。
+
+macOS envelope 编解码、KDF 和 AEAD 位于 macOS backend 内，测试覆盖 round trip、
+错误 ECDH secret、错误 identity、公钥编码、header/ciphertext 篡改、截断、尾随
+数据、未知版本和跨平台拒绝。Touch ID 对话、签名与 entitlement、Secure Enclave
+持久化和指纹集合变更行为仍必须在目标 Mac 真机验证。
+
+Linux 测试覆盖 marker 解析、identity 绑定、跨平台拒绝以及进程内密钥缺失语义。
+polkit 对话、桌面 authentication agent 和 `memfd_secret` 实际使用情况仍必须在目标
+Linux 发行版上验证。
 
 ## 错误模型
 
 系统保护器使用平台无关的错误：
 
 ```rust
-SystemProtectorUnavailable
-SystemAuthenticationNotConfigured
-IncompatibleSystemProtector
-SystemKeyNotFound
-SystemKeyInvalidated
+Unsupported
+Unavailable
+NotConfigured
+Incompatible
+AccessDenied
 AuthenticationCancelled
 AuthenticationFailed
+UserVerificationRequired
+KeyNotFound
+KeyInvalidated
+InvalidData
+Internal
 ```
 
-平台 SDK 的具体错误放入现有的 `XSecError::Protector` source，不直接成为公开 enum 成员。认证失败不得暴露使用了 PIN、生物识别还是其他设备凭据。
+平台 SDK 的具体错误在 backend 内部归一化，不直接成为公开 enum 成员。
+`XSec` 只通过 `XSecError::Protector(XSecProtectorError)` 包装稳定类别。
+认证失败不得暴露使用了 PIN、生物识别还是其他设备凭据。
 
 ## 使用示例
 
@@ -304,13 +482,13 @@ let protector = XSecSystemProtector::new(
 protector.check_availability().await?;
 
 if xsec.is_initialized() {
-    xsec.unlock(&protector).await?;
+    xsec.unlock_system().await?;
 } else {
     xsec.create(&protector).await?;
 }
 ```
 
-示例中的 `identity` 只展示结构，不要求使用反向域名格式。业务应从稳定、非敏感且能唯一标识当前 Storage 的数据生成 `identity`。
+示例中的 `identity` 只在创建时使用，也只展示结构，不要求使用反向域名格式。业务应从稳定、非敏感且能唯一标识当前 Storage 的数据生成 `identity`。
 
 ## 暂不纳入
 

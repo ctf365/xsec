@@ -1,13 +1,13 @@
-use xsec::{XSec, XSecError, XSecFileStorage, XSecResult, XSecSystemProtector};
+use xsec::{XSec, XSecError, XSecFileStorage, XSecProtectorError, XSecResult, XSecSystemProtector};
 
 #[tokio::main]
 async fn main() -> XSecResult<()> {
-    let storage = XSecFileStorage::new("target/system.xsec");
-    let protector = XSecSystemProtector::new("xsec-example-system");
+    let storage = XSecFileStorage::new("target/system.xsec.keys");
 
     if std::env::args().any(|arg| arg == "--delete") {
+        let protector = XSecSystemProtector::new("xsec-example-system");
         protector.delete().await?;
-        println!("Deleted the Windows Hello credential.");
+        println!("Deleted the system protector key.");
         return Ok(());
     }
 
@@ -15,17 +15,26 @@ async fn main() -> XSecResult<()> {
     xsec.load(storage).await?;
 
     let result = if xsec.is_initialized() {
-        xsec.unlock(&protector).await
+        xsec.unlock_system().await
     } else {
+        let protector = XSecSystemProtector::new("xsec-example-system");
         xsec.create(&protector).await
     };
     if let Err(error) = result {
         match error {
-            XSecError::WindowsHelloNotSupported
-            | XSecError::WindowsHelloNotConfigured
-            | XSecError::SystemProtectorUnavailable => {
+            XSecError::Protector(
+                XSecProtectorError::Unsupported
+                | XSecProtectorError::NotConfigured
+                | XSecProtectorError::Unavailable,
+            ) => {
                 println!(
-                    "System protector is unavailable: configure Windows Hello for the current user before running this example."
+                    "System protector is unavailable: configure the platform authentication service before running this example."
+                );
+                return Ok(());
+            }
+            XSecError::Protector(XSecProtectorError::KeyNotFound) => {
+                println!(
+                    "The platform system key is unavailable; unlock with another protector or recreate the example storage."
                 );
                 return Ok(());
             }

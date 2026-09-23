@@ -7,8 +7,8 @@ pub mod storage;
 pub mod xsec;
 
 pub use error::{XSecError, XSecResult};
-pub use protector::XSecProtector;
-pub use storage::XSecStorage;
+pub use protector::{XSecProtector, XSecProtectorError, XSecProtectorResult};
+pub use storage::{XSecStorage, XSecStorageError, XSecStorageResult};
 pub use xsec::{XSec, XSecStatus};
 
 #[cfg(feature = "password-protector")]
