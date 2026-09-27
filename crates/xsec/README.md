@@ -50,7 +50,10 @@ async fn main() -> XSecResult<()> {
 - 密码强度决定 metadata 被窃取后的离线猜测难度。
 - `create` 返回锁定状态且尚未持久化的实例，不生成或暂存 DEK；首次添加密钥保护器时才生成 DEK 并保存 metadata。之后必须使用已添加的保护器解锁。
 - `destroy` 删除当前 Storage 中的 metadata，但不保证磁盘、备份或快照已物理擦除。
-- v1 不提供回滚保护、数据密钥轮换、多端同步或并发写入冲突处理。
+- v1 不提供完整存储快照的防回滚、数据密钥轮换或多端同步。为避免制造虚假的
+  撤销语义，普通 protector 的替换和移除会返回
+  `ProtectorChangeRequiresKeyRotation`；Windows 和 macOS 的 system protector 可通过销毁
+  持久平台密钥安全移除。Linux 的 session-only protector 不支持这种跨快照撤销。
 - 第三方 `XSecProtector` 能接触明文 DEK，必须视为受信任代码。
 
 ## License

@@ -239,42 +239,15 @@ impl<S: XSecStorage> XSec<S> {
         kind: &str,
         p: &P,
     ) -> XSecResult<()> {
-        let next = {
-            let (storage, metadata, key) = match &self.state {
-                State::Unlocked(storage, metadata, key) => (storage, metadata, key),
-                _ => return Err(XSecError::Locked),
-            };
-            let Some(index) = metadata
-                .protectors
-                .iter()
-                .position(|record| record.kind == kind)
-            else {
-                return Err(XSecError::ProtectorNotFound);
-            };
-            if p.kind() != kind
-                && metadata
-                    .protectors
-                    .iter()
-                    .any(|record| record.kind == p.kind())
-            {
-                return Err(XSecError::ProtectorAlreadyExists);
-            }
-            validate_kind(p.kind())?;
-            let payload = p.wrap_key(key).await?;
-            let mut next = metadata.clone();
-            next.protectors[index] = ProtectorRecord {
-                kind: p.kind().into(),
-                payload,
-            };
-            let bytes = next.encode(key)?;
-            storage.save(&bytes).await?;
-            next
+        let metadata = match &self.state {
+            State::Unlocked(_, metadata, _) => metadata,
+            _ => return Err(XSecError::Locked),
         };
-        let State::Unlocked(_, metadata, _) = &mut self.state else {
-            unreachable!();
-        };
-        *metadata = next;
-        Ok(())
+        if !metadata.protectors.iter().any(|record| record.kind == kind) {
+            return Err(XSecError::ProtectorNotFound);
+        }
+        validate_kind(p.kind())?;
+        Err(XSecError::ProtectorChangeRequiresKeyRotation)
     }
     pub async fn remove_key_protector(&mut self, kind: &str) -> XSecResult<()> {
         let next = {
@@ -288,6 +261,22 @@ impl<S: XSecStorage> XSec<S> {
             if metadata.protectors.len() == 1 {
                 return Err(XSecError::LastProtector);
             }
+            if kind != "system" {
+                return Err(XSecError::ProtectorChangeRequiresKeyRotation);
+            }
+            #[cfg(all(feature = "system-protector", not(target_os = "linux")))]
+            {
+                let record = metadata
+                    .protectors
+                    .iter()
+                    .find(|record| record.kind == kind)
+                    .ok_or(XSecError::ProtectorNotFound)?;
+                crate::XSecSystemProtector::from_payload(&record.payload)?
+                    .delete()
+                    .await?;
+            }
+            #[cfg(any(not(feature = "system-protector"), target_os = "linux"))]
+            return Err(XSecError::ProtectorChangeRequiresKeyRotation);
             let mut next = metadata.clone();
             next.protectors.retain(|record| record.kind != kind);
             let bytes = next.encode(key)?;
@@ -304,9 +293,20 @@ impl<S: XSecStorage> XSec<S> {
         match &self.state {
             State::Empty => return Err(XSecError::StorageNotLoaded),
             State::Destroyed(_) => return Ok(()),
-            State::Uninitialized(storage)
-            | State::Locked(storage, _)
-            | State::Unlocked(storage, _, _) => storage.delete().await?,
+            State::Uninitialized(storage) => storage.delete().await?,
+            State::Locked(storage, metadata) | State::Unlocked(storage, metadata, _) => {
+                #[cfg(feature = "system-protector")]
+                if let Some(record) = metadata
+                    .protectors
+                    .iter()
+                    .find(|record| record.kind == "system")
+                {
+                    crate::XSecSystemProtector::from_payload(&record.payload)?
+                        .delete()
+                        .await?;
+                }
+                storage.delete().await?;
+            }
         }
         let previous = std::mem::replace(&mut self.state, State::Empty);
         let storage = match previous {

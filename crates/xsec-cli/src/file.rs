@@ -1,8 +1,10 @@
 use std::{
+    fs::{File, OpenOptions},
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
+use fs2::FileExt;
 use tempfile::NamedTempFile;
 use zeroize::Zeroizing;
 
@@ -141,6 +143,14 @@ pub(crate) async fn atomic_replace_if_unchanged(
             .parent()
             .filter(|value| !value.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|source| {
+            io_error(format!("failed to create `{}`", parent.display()), source)
+        })?;
+        let lock_path = update_lock_path(&path);
+        let lock = open_update_lock(&lock_path)?;
+        lock.lock_exclusive().map_err(|source| {
+            io_error(format!("failed to lock `{}`", lock_path.display()), source)
+        })?;
         let mut temporary = NamedTempFile::new_in(parent).map_err(|source| {
             io_error(
                 format!(
@@ -215,4 +225,23 @@ pub(crate) async fn atomic_replace_if_unchanged(
     })
     .await
     .map_err(|_| CliError::FileTaskFailed)?
+}
+
+fn update_lock_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".lock");
+    value.into()
+}
+
+fn open_update_lock(path: &Path) -> CliResult<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|source| io_error(format!("failed to open `{}`", path.display()), source))
 }

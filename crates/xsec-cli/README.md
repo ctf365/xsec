@@ -99,13 +99,16 @@ Remove a protector after authorizing with another configured protector:
 
 ```text
 xsec protector remove system
-xsec protector remove password
 ```
 
 The CLI automatically uses the other configured protector. Use
 `--unlock-with <password|system>` to select one explicitly when needed, and
 `--password` when the selected password protector must read from standard
-input. The last protector cannot be removed.
+input. The last protector cannot be removed. Removing or replacing a password
+protector is rejected until XSec has a data-key rotation and ciphertext
+migration API; otherwise an older authenticated metadata snapshot would restore
+the old password. On Linux, the CLI also rejects adding the session-only system
+protector because its in-memory key cannot survive process exit.
 
 On macOS, the executable must be signed with a provisioning profile that
 authorizes its `com.apple.application-identifier` entitlement. An ad-hoc signed

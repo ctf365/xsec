@@ -241,7 +241,14 @@ impl<S: XSecStorage> XSec<S> {
 
 每种 `kind` 最多保存一个保护器。`key_protector_kinds` 返回当前 metadata 中的保护器类型，调用方可以据此选择密码、生物识别或 KMS 解锁流程。XSec 解锁前无法验证整份 metadata 的真实性，因此该列表在成功解锁前只能作为界面提示，不能作为安全决策依据。
 
-`add_key_protector` 使用新的保护方式包装当前 DEK。相同 `kind` 已存在时返回 `XSecError::ProtectorAlreadyExists`。`remove_key_protector` 按 `kind` 删除保护器，但必须保证至少保留一种可用的解锁方式。`replace_key_protector` 使用新的保护器重新包装同一个 DEK，可用于修改密码或迁移认证方式；新保护器的 `kind` 已被其他记录占用时，返回 `XSecError::ProtectorAlreadyExists`。
+`add_key_protector` 使用新的保护方式包装当前 DEK。相同 `kind` 已存在时返回
+`XSecError::ProtectorAlreadyExists`。v1 没有业务密文迁移协议，因此
+`replace_key_protector` 以及普通 protector 的移除返回
+`XSecError::ProtectorChangeRequiresKeyRotation`，避免让旧 metadata 快照恢复已撤销的
+密码。system protector 是例外：实现先销毁对应的平台密钥，再提交删除记录后的
+metadata；即使旧 metadata 被恢复，也无法重新执行平台解包。该例外只适用于具有
+持久平台密钥的 Windows 和 macOS；Linux session-only protector 仍要求数据密钥
+轮换。最后一个 protector 仍然不能移除。
 
 保护器变更必须先在临时 metadata 上完成。只有 storage 保存成功后，XSec 才替换内存中的 metadata；保存失败时当前实例保持原有 metadata，不自动重试。
 
@@ -405,7 +412,10 @@ metadata_mac = HMAC-SHA256(
 
 `open` 只能执行长度、格式、canonical encoding 和结构校验。`unlock` 恢复 DEK 后，对原始 `metadata_blob_without_mac` 验证 metadata MAC，验证通过后才能进入 `Unlocked` 状态。MAC 不匹配时返回 `XSecError::Corrupted`。
 
-旧 metadata 连同有效 MAC 一起回滚时仍能通过验证。第一版不提供防回滚能力。
+旧 metadata 连同有效 MAC 一起回滚时仍能通过验证。第一版不提供完整存储快照的
+防回滚能力；这需要 metadata 文件之外的可信版本计数器或服务端协议。为避免把
+重新包装同一 DEK误认为撤销，v1 拒绝普通 protector 的替换和移除。调用方如需
+修改密码，应创建新的 XSec 存储、生成新 DEK，并迁移全部业务密文。
 
 ## Password Protector
 

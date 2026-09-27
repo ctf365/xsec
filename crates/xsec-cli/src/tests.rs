@@ -1,4 +1,4 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::ffi::OsString;
 
 use clap::Parser;
 use secrecy::SecretBox;
@@ -39,7 +39,7 @@ fn parses_run_command_after_separator() {
     assert!(matches!(
         cli.command,
         Command::Run(RunArgs { file, command, .. })
-            if file == PathBuf::from(".xsec.test")
+            if file == std::path::Path::new(".xsec.test")
                 && command == vec![OsString::from("printenv")]
     ));
 }
@@ -50,7 +50,7 @@ fn uses_storage_as_the_key_storage_option() {
     assert!(matches!(
         cli.command,
         Command::Inspect(InspectArgs { storage })
-            if storage == PathBuf::from(".xsec.storage")
+            if storage == std::path::Path::new(".xsec.storage")
     ));
     assert!(Cli::try_parse_from(["xsec", "inspect", "--metadata", ".xsec.keys"]).is_err());
 }
@@ -97,7 +97,7 @@ fn parses_add_system_protector() {
                     password: true,
                 }),
             }),
-        }) if identity == "project-id" && storage == PathBuf::from(".xsec.custom.keys")
+        }) if identity == "project-id" && storage == std::path::Path::new(".xsec.custom.keys")
     ));
     assert!(Cli::try_parse_from(["xsec", "get", "TOKEN", "--identity", "project-id"]).is_err());
 }
@@ -125,7 +125,7 @@ fn parses_remove_protector() {
                 unlock_with: Some(ProtectorKind::Password),
                 password: true,
             }),
-        }) if storage == PathBuf::from(".xsec.custom.keys")
+        }) if storage == std::path::Path::new(".xsec.custom.keys")
     ));
 }
 
@@ -144,7 +144,7 @@ fn parses_top_level_set_for_interactive_input() {
             value: None,
             file,
             ..
-        }) if key == "TOKEN" && file == PathBuf::from(".xsec.test")
+        }) if key == "TOKEN" && file == std::path::Path::new(".xsec.test")
     ));
 }
 
@@ -169,7 +169,7 @@ fn parses_top_level_del() {
     assert!(matches!(
         cli.command,
         Command::Del(DelArgs { key, file, .. })
-            if key == "TOKEN" && file == PathBuf::from(".xsec.test")
+            if key == "TOKEN" && file == std::path::Path::new(".xsec.test")
     ));
 }
 

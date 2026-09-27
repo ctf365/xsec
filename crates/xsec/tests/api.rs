@@ -164,10 +164,12 @@ async fn cancelling_protector_operations_preserves_state() {
     drop(add);
     assert_eq!(unlocked.status(), XSecStatus::Unlocked);
 
-    let pending_replace = PendingProtector("test");
-    let mut replace = Box::pin(unlocked.replace_key_protector("test", &pending_replace));
-    poll_pending_once(replace.as_mut()).await;
-    drop(replace);
+    assert!(matches!(
+        unlocked
+            .replace_key_protector("test", &PendingProtector("test"))
+            .await,
+        Err(XSecError::ProtectorChangeRequiresKeyRotation)
+    ));
     assert_eq!(unlocked.status(), XSecStatus::Unlocked);
 
     unlocked.lock().unwrap();
@@ -213,7 +215,7 @@ async fn file_storage_holds_an_exclusive_lock_for_its_lifetime() {
 }
 
 #[tokio::test]
-async fn replaces_the_only_key_protector() {
+async fn rejects_protector_replacement_without_data_key_rotation() {
     let storage = Mem::default();
     let old = P("password", 7);
     let new = P("password", 11);
@@ -222,16 +224,32 @@ async fn replaces_the_only_key_protector() {
     xsec.create(&old).await.unwrap();
     let ciphertext = xsec.encrypt(b"secret").unwrap();
 
-    xsec.replace_key_protector("password", &new).await.unwrap();
+    assert!(matches!(
+        xsec.replace_key_protector("password", &new).await,
+        Err(XSecError::ProtectorChangeRequiresKeyRotation)
+    ));
 
     let mut reloaded = XSec::new();
     reloaded.load(storage).await.unwrap();
-    assert!(matches!(
-        reloaded.unlock(&old).await,
-        Err(XSecError::Corrupted)
-    ));
-    reloaded.unlock(&new).await.unwrap();
+    reloaded.unlock(&old).await.unwrap();
     assert_eq!(reloaded.decrypt(&ciphertext).unwrap().as_slice(), b"secret");
+}
+
+#[tokio::test]
+async fn rejects_password_removal_without_data_key_rotation() {
+    let mut xsec = XSec::new();
+    xsec.load(Mem::default()).await.unwrap();
+    xsec.create(&P("password", 7)).await.unwrap();
+    xsec.add_key_protector(&P("recovery", 11)).await.unwrap();
+
+    assert!(matches!(
+        xsec.remove_key_protector("password").await,
+        Err(XSecError::ProtectorChangeRequiresKeyRotation)
+    ));
+    assert_eq!(
+        xsec.key_protector_kinds().collect::<Vec<_>>(),
+        vec!["password", "recovery"]
+    );
 }
 
 #[tokio::test]
@@ -247,7 +265,7 @@ async fn replace_key_protector_rejects_an_occupied_kind() {
     assert!(matches!(
         xsec.replace_key_protector("password", &P("system", 13))
             .await,
-        Err(XSecError::ProtectorAlreadyExists)
+        Err(XSecError::ProtectorChangeRequiresKeyRotation)
     ));
     assert_eq!(xsec.status(), XSecStatus::Unlocked);
     assert_eq!(

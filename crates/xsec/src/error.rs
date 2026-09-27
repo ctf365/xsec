@@ -35,6 +35,8 @@ pub enum XSecError {
     ProtectorAlreadyExists,
     #[error("the last key protector cannot be removed")]
     LastProtector,
+    #[error("changing this key protector requires data-key rotation and ciphertext migration")]
+    ProtectorChangeRequiresKeyRotation,
     #[error(transparent)]
     Storage(#[from] XSecStorageError),
     #[error(transparent)]

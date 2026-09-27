@@ -15,6 +15,7 @@ path = "src/main.rs"
 base64ct = { version = "1.8.3", features = ["alloc"] }
 clap = { version = "4.5.48", features = ["derive"] }
 dotenvy = "0.15.7"
+fs2 = "0.4.3"
 rpassword = "7.5.4"
 secrecy = "0.10.3"
 tempfile = "3.27.0"

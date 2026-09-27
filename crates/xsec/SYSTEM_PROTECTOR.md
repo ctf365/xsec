@@ -229,6 +229,10 @@ Linux marker 只把 metadata 记录绑定到当前 identity，并标识其平台
 `XSecProtectorError::KeyInvalidated`。各平台 parser 识别到另一平台的 magic 时返回
 `XSecProtectorError::Incompatible`。
 
+该 Linux 模式只适用于持有同一个 protector 实例的长期运行进程。一次一进程的 CLI
+无法在后续调用中恢复内存密钥，因此 XSec CLI 在 Linux 上拒绝添加 system
+protector。
+
 ## 操作语义
 
 ### new
