@@ -201,6 +201,7 @@ fn is_not_found(error: &windows::core::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::{ExposeSecret, SecretBox};
 
     #[test]
     fn identity_is_not_exposed_in_credential_name() {
@@ -227,5 +228,60 @@ mod tests {
         let stable = first == second;
         protector.delete().await.unwrap();
         assert!(stable, "Windows Hello signatures were not deterministic");
+    }
+
+    /// Manual Windows security/runtime test. It exercises the complete
+    /// enrollment and unlock path, including the user-verification prompt.
+    #[tokio::test]
+    #[ignore = "requires an interactive Windows Hello configuration"]
+    async fn windows_hello_wrap_and_unwrap_round_trip() {
+        let protector = XSecSystemProtector::new("xsec-manual-round-trip-test");
+        protector.delete().await.unwrap();
+
+        let expected = SecretBox::new(Box::new([0x5a; 32]));
+        let payload = protector.wrap_key(&expected).await.unwrap();
+        let restored = protector.unwrap_key(&payload).await.unwrap();
+
+        assert_eq!(restored.expose_secret(), expected.expose_secret());
+        protector.delete().await.unwrap();
+    }
+
+    /// Manual Windows security/runtime test. Deleting the credential must
+    /// invalidate the persisted envelope; the backend must not recreate a
+    /// credential or use a cached key during unlock.
+    #[tokio::test]
+    #[ignore = "requires an interactive Windows Hello configuration"]
+    async fn windows_hello_credential_reset_invalidates_payload() {
+        let protector = XSecSystemProtector::new("xsec-manual-reset-test");
+        protector.delete().await.unwrap();
+
+        let key = SecretBox::new(Box::new([0xa5; 32]));
+        let payload = protector.wrap_key(&key).await.unwrap();
+        protector.delete().await.unwrap();
+
+        assert!(matches!(
+            protector.unwrap_key(&payload).await,
+            Err(XSecProtectorError::KeyNotFound)
+        ));
+    }
+
+    /// Manual Windows security/runtime test. A signature from an unrelated
+    /// input cannot replace the Windows Hello operation that gates unwrap.
+    #[tokio::test]
+    #[ignore = "requires an interactive Windows Hello configuration"]
+    async fn windows_hello_direct_bypass_cannot_unwrap_payload() {
+        let protector = XSecSystemProtector::new("xsec-manual-bypass-test");
+        protector.delete().await.unwrap();
+
+        let key = SecretBox::new(Box::new([0x3c; 32]));
+        let payload = protector.wrap_key(&key).await.unwrap();
+        let envelope = crypto::SystemEnvelope::parse(&payload, &protector.identity).unwrap();
+        let attacker_prf = WindowsHelloPrf::from_signature(b"unrelated-signature");
+
+        assert!(matches!(
+            envelope.open(&attacker_prf),
+            Err(XSecProtectorError::AuthenticationFailed)
+        ));
+        protector.delete().await.unwrap();
     }
 }

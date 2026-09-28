@@ -1,26 +1,41 @@
 # XSec
 
-XSec 是一个跨平台数据加密库。它生成并管理数据加密密钥（DEK），使用密码或调用方提供的系统/KMS 保护器包装 DEK，并提供稳定的 AES-256-GCM 加解密接口。
+XSec is a cross-platform data encryption library. It generates and manages
+data-encryption keys (DEKs), protects them with password or system/KMS
+protectors, and provides authenticated AES-256-GCM encryption.
 
-业务密文由调用方保存；`XSecStorage` 只保存 XSec 自身的 metadata。
+Business ciphertext is owned by the caller. `XSecStorage` stores only XSec
+metadata.
 
-## 特性
+## Features
 
-- 随机 DEK 与随机 nonce 的 AES-256-GCM 数据加密
-- 与密文头一起认证的用户 AAD
-- Argon2id 密码保护器（固定安全参数，阻塞计算由 Tokio 调度）
-- canonical binary metadata 与 HKDF/HMAC-SHA256 整体认证
-- Metadata 使用 `XSecMD` 标识，业务密文使用 `XSecCT` 标识
-- 可扩展的异步 `XSecStorage` 和 `XSecProtector`
-- 敏感密钥与解密结果使用 `SecretBox` / `Zeroizing`
-- `file-storage` 默认 feature 提供单 blob 原子文件存储，并在 Storage 生命周期内持有独占文件锁
-- Storage 后端错误统一归一化为 `XSecStorageError`，不向核心层暴露具体 I/O 错误
-- Protector 后端错误统一归一化为 `XSecProtectorError`，不向核心层暴露平台 SDK 错误
-- `password-protector` 默认 feature 提供 Argon2id 密码保护器
+- Random-DEK and random-nonce AES-256-GCM encryption
+- User AAD authenticated together with the ciphertext header
+- Argon2id password protector with blocking work dispatched through Tokio
+- Canonical binary metadata authenticated with HKDF/HMAC-SHA256
+- Extensible asynchronous `XSecStorage` and `XSecProtector` interfaces
+- `SecretBox` and `Zeroizing` for sensitive keys and decrypted data
+- Optional atomic file storage with an exclusive lifetime lock
+- Stable, platform-independent storage and protector error categories
 
-`XSecStorage` 和 `XSecProtector` 只定义抽象接口。具体实现位于对应子模块，并通过 feature 按需编译：`storage/file.rs`、`protector/password.rs`。
+## Features and platform notes
 
-## 快速开始
+The default feature set enables `file-storage`, `password-protector`, and
+`system-protector`. Each feature can be disabled for smaller or more portable
+builds. The system protector selects the backend for the target platform:
+
+| Platform | System protection |
+| --- | --- |
+| Windows | Windows Hello credential signing |
+| macOS | Secure Enclave and Keychain access control |
+| Linux | polkit authorization and protected process memory |
+| Other targets | `Unavailable` |
+
+Real prompts, credentials, entitlements, desktop agents, and secure hardware
+must be tested on the target device; a successful cross-compilation is not
+runtime evidence.
+
+## Quick start
 
 ```rust
 use secrecy::SecretBox;
@@ -31,9 +46,11 @@ async fn main() -> XSecResult<()> {
     let storage = XSecFileStorage::new("data/account.xsec.keys");
     let password = SecretBox::new(Box::new(b"correct horse battery staple".to_vec()));
     let protector = XSecPasswordProtector::new(password);
-    let mut xsec = XSec::create(storage).await?;
-    xsec.add_key_protector(&protector).await?;
-    xsec.unlock(&protector).await?;
+    let mut xsec = XSec::new();
+    xsec.load(storage).await?;
+    if !xsec.is_initialized() {
+        xsec.create(&protector).await?;
+    }
     let ciphertext = xsec.encrypt_with_aad(b"alice@example.com", b"user:123/profile/email")?;
     xsec.lock()?;
     xsec.unlock(&protector).await?;
@@ -43,18 +60,37 @@ async fn main() -> XSecResult<()> {
 }
 ```
 
-完整格式、安全边界和 API 契约见 [`API_DESIGN.md`](API_DESIGN.md)。
+The Chinese version is [`README.zh-CN.md`](README.zh-CN.md). The workspace
+entry point is [`../../README.md`](../../README.md).
 
-## 安全边界
+## Lifecycle
 
-- 密码强度决定 metadata 被窃取后的离线猜测难度。
-- `create` 返回锁定状态且尚未持久化的实例，不生成或暂存 DEK；首次添加密钥保护器时才生成 DEK 并保存 metadata。之后必须使用已添加的保护器解锁。
-- `destroy` 删除当前 Storage 中的 metadata，但不保证磁盘、备份或快照已物理擦除。
-- v1 不提供完整存储快照的防回滚、数据密钥轮换或多端同步。为避免制造虚假的
-  撤销语义，普通 protector 的替换和移除会返回
-  `ProtectorChangeRequiresKeyRotation`；Windows 和 macOS 的 system protector 可通过销毁
-  持久平台密钥安全移除。Linux 的 session-only protector 不支持这种跨快照撤销。
-- 第三方 `XSecProtector` 能接触明文 DEK，必须视为受信任代码。
+An `XSec` instance owns one storage object and moves through these states:
+
+```text
+new → load → uninitialized → create → unlocked ↔ locked
+                                  └──────────────→ destroyed
+```
+
+Use `create` only for new storage and `unlock` for existing metadata. Encryption
+and decryption require the unlocked state. `lock` clears the in-memory DEK;
+`destroy` removes the current metadata but cannot erase backups or snapshots.
+
+`XSecStorage` stores XSec metadata only. Callers remain responsible for storing
+business ciphertext. `XSecProtector` implementations wrap and unwrap the DEK;
+custom protectors are trusted code and must not log or retain the plaintext key.
+
+`encrypt_with_aad` authenticates caller-supplied context without encrypting it.
+Use stable, non-secret identifiers such as record IDs and field names. Every
+encryption operation generates a fresh nonce.
+
+## Security boundaries
+
+- Password strength determines resistance to offline guessing of stolen metadata.
+- `destroy` removes current metadata but cannot guarantee physical erasure from disks, backups, or snapshots.
+- Version 1 does not provide rollback protection, DEK rotation, or multi-device synchronization.
+- A third-party `XSecProtector` can access the plaintext DEK and must be trusted.
+- Losing the storage metadata makes protected data unrecoverable unless a valid backup exists.
 
 ## License
 

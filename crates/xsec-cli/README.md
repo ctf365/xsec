@@ -114,6 +114,17 @@ On macOS, the executable must be signed with a provisioning profile that
 authorizes its `com.apple.application-identifier` entitlement. An ad-hoc signed
 binary produced by `cargo run` cannot use this Secure Enclave protector.
 
+## Storage and recovery notes
+
+The `.xsec.keys` file is the key-management state for the encrypted values; it
+is not disposable cache data. Back it up through a protected secret-management
+channel and keep it separate from `.env` and `.xsec`. Anyone who can read the
+metadata can attempt offline password guesses, so use a strong password and do
+not place passwords in command-line arguments or shell history.
+
+The Chinese version is [`README.zh-CN.md`](README.zh-CN.md). The workspace
+entry point is [`../../README.md`](../../README.md).
+
 ## Runtime behavior
 - Existing process environment variables take precedence by default.
 - `--override` lets values from the encrypted file replace existing values.
