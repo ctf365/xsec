@@ -274,9 +274,8 @@ async fn replace_key_protector_rejects_an_occupied_kind() {
     );
 }
 
-#[cfg(feature = "system-protector")]
 #[tokio::test]
-async fn unlock_system_requires_a_configured_system_protector() {
+async fn generic_unlock_requires_a_configured_protector_kind() {
     let storage = Mem::default();
     let mut initialized = XSec::new();
     initialized.load(storage.clone()).await.unwrap();
@@ -286,7 +285,7 @@ async fn unlock_system_requires_a_configured_system_protector() {
     locked.load(storage).await.unwrap();
 
     assert!(matches!(
-        locked.unlock_system().await,
+        locked.unlock(&P("system", 8)).await,
         Err(XSecError::ProtectorNotFound)
     ));
 }
@@ -303,7 +302,7 @@ fn status_reports_empty() {
 ))]
 #[tokio::test]
 async fn system_protector_is_explicitly_unavailable_without_a_backend() {
-    let protector = XSecSystemProtector::new("stable-storage-id");
+    let protector = XSecSystemProtector::new("stable-storage-id").unwrap();
     assert_eq!(protector.kind(), "system");
     assert!(matches!(
         protector.check_availability().await,

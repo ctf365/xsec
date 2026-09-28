@@ -20,15 +20,15 @@ XSec 是一个跨平台数据加密库。它生成并管理数据加密密钥（
 
 ## Feature 和平台说明
 
-默认启用 `file-storage`、`password-protector` 和 `system-protector`。每个
-feature 都可以关闭，以构建更小或更易移植的版本。system protector 根据目标
-平台选择 backend：
+默认启用 `file-storage` 和 `password-protector`。`system-protector` 默认关闭，
+启用后只控制是否编译并导出 `XSecSystemProtector`，不会给 `XSec` 增加专属方法。
+启用时，system protector 根据目标平台选择 backend：
 
 | 平台 | 系统保护方式 |
 | --- | --- |
 | Windows | Windows Hello credential 签名 |
 | macOS | Secure Enclave 和 Keychain 访问控制 |
-| Linux | polkit 授权和受保护进程内存 |
+| Linux | 仅当前进程会话内的受保护内存；不保证用户在场验证或持久化 |
 | 其他目标 | 返回 `Unavailable` |
 
 真实提示框、credential、entitlement、桌面 agent 和安全硬件必须在目标设备上

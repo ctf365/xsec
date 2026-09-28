@@ -1,6 +1,6 @@
 mod crypto;
 
-use self::crypto::{Challenge, Identity, SystemEnvelope, WindowsHelloPrf};
+use self::crypto::{Challenge, Identity, ResourceId, SystemEnvelope, WindowsHelloPrf};
 use super::hash_identity;
 use crate::{XSecProtector, XSecProtectorError, XSecProtectorResult};
 use secrecy::SecretBox;
@@ -21,24 +21,30 @@ const MAX_SIGNATURE_SIZE: usize = 16 * 1024;
 
 pub struct XSecSystemProtector {
     identity: [u8; 32],
+    resource_id: ResourceId,
     credential_name: String,
 }
 
 impl XSecSystemProtector {
-    pub fn new(identity: impl Into<String>) -> Self {
+    pub fn new(identity: impl Into<String>) -> XSecProtectorResult<Self> {
         let identity = hash_identity(&identity.into());
-        Self::from_identity(identity)
+        let mut resource_id = [0; 16];
+        getrandom::fill(&mut resource_id).map_err(|_| XSecProtectorError::Internal)?;
+        Ok(Self::from_parts(identity, resource_id))
     }
 
     pub(crate) fn from_payload(payload: &[u8]) -> XSecProtectorResult<Self> {
-        let identity = *SystemEnvelope::parse_stored(payload)?.identity();
-        Ok(Self::from_identity(identity))
+        let envelope = SystemEnvelope::parse_stored(payload)?;
+        let identity = *envelope.identity();
+        let resource_id = *envelope.resource_id();
+        Ok(Self::from_parts(identity, resource_id))
     }
 
-    fn from_identity(identity: Identity) -> Self {
+    fn from_parts(identity: Identity, resource_id: ResourceId) -> Self {
         Self {
-            credential_name: format!("{CREDENTIAL_PREFIX}{}", hex(&identity)),
+            credential_name: format!("{CREDENTIAL_PREFIX}{}", hex(&resource_id)),
             identity,
+            resource_id,
         }
     }
 
@@ -140,7 +146,7 @@ impl XSecProtector for XSecSystemProtector {
         let credential = self.create_credential().await?;
         let challenge = Challenge::random()?;
         let prf = Self::sign(&credential, challenge.as_bytes()).await?;
-        crypto::seal_key(key, &self.identity, &challenge, &prf)
+        crypto::seal_key(key, &self.identity, &self.resource_id, &challenge, &prf)
     }
 
     async fn unwrap_key<'a>(
@@ -150,6 +156,10 @@ impl XSecProtector for XSecSystemProtector {
         let envelope = SystemEnvelope::parse(payload, &self.identity)?;
         let prf = self.authorize(envelope.challenge()).await?;
         envelope.open(&prf)
+    }
+
+    async fn delete(&self) -> XSecProtectorResult<()> {
+        XSecSystemProtector::delete(self).await
     }
 }
 
@@ -205,7 +215,7 @@ mod tests {
 
     #[test]
     fn identity_is_not_exposed_in_credential_name() {
-        let protector = XSecSystemProtector::new("account/secret-name");
+        let protector = XSecSystemProtector::new("account/secret-name").unwrap();
         assert!(protector.credential_name.starts_with(CREDENTIAL_PREFIX));
         assert!(!protector.credential_name.contains("account"));
     }
@@ -215,7 +225,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an interactive Windows Hello configuration"]
     async fn windows_hello_signature_is_stable_for_persistent_challenge() {
-        let protector = XSecSystemProtector::new("xsec-manual-signature-stability-test");
+        let protector = XSecSystemProtector::new("xsec-manual-signature-stability-test").unwrap();
         protector.delete().await.unwrap();
         let credential = protector.create_credential().await.unwrap();
         let challenge = [11u8; 16];
@@ -235,7 +245,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an interactive Windows Hello configuration"]
     async fn windows_hello_wrap_and_unwrap_round_trip() {
-        let protector = XSecSystemProtector::new("xsec-manual-round-trip-test");
+        let protector = XSecSystemProtector::new("xsec-manual-round-trip-test").unwrap();
         protector.delete().await.unwrap();
 
         let expected = SecretBox::new(Box::new([0x5a; 32]));
@@ -252,7 +262,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an interactive Windows Hello configuration"]
     async fn windows_hello_credential_reset_invalidates_payload() {
-        let protector = XSecSystemProtector::new("xsec-manual-reset-test");
+        let protector = XSecSystemProtector::new("xsec-manual-reset-test").unwrap();
         protector.delete().await.unwrap();
 
         let key = SecretBox::new(Box::new([0xa5; 32]));
@@ -270,7 +280,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an interactive Windows Hello configuration"]
     async fn windows_hello_direct_bypass_cannot_unwrap_payload() {
-        let protector = XSecSystemProtector::new("xsec-manual-bypass-test");
+        let protector = XSecSystemProtector::new("xsec-manual-bypass-test").unwrap();
         protector.delete().await.unwrap();
 
         let key = SecretBox::new(Box::new([0x3c; 32]));

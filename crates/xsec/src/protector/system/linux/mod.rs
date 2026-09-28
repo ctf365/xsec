@@ -1,15 +1,7 @@
-use std::{
-    collections::HashMap,
-    sync::{Mutex, MutexGuard},
-};
+use std::sync::{Mutex, MutexGuard};
 
 use secrecy::{ExposeSecret, SecretBox};
 use secure_types::SecureArray;
-use zbus::{
-    Connection,
-    zvariant::{OwnedValue, Str},
-};
-use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
 use super::hash_identity;
 use crate::{XSecProtector, XSecProtectorError, XSecProtectorResult};
@@ -23,7 +15,6 @@ const KEY_SIZE: usize = 32;
 const IDENTITY_SIZE: usize = 32;
 const KEY_ID_SIZE: usize = 16;
 const PAYLOAD_SIZE: usize = MAGIC.len() + 2 + IDENTITY_SIZE + KEY_ID_SIZE;
-const POLKIT_ACTION: &str = "com.xsec.XSec.unlock";
 
 struct StoredKey {
     id: [u8; KEY_ID_SIZE],
@@ -36,8 +27,8 @@ pub struct XSecSystemProtector {
 }
 
 impl XSecSystemProtector {
-    pub fn new(identity: impl Into<String>) -> Self {
-        Self::from_identity(hash_identity(&identity.into()))
+    pub fn new(identity: impl Into<String>) -> XSecProtectorResult<Self> {
+        Ok(Self::from_identity(hash_identity(&identity.into())))
     }
 
     pub(crate) fn from_payload(payload: &[u8]) -> XSecProtectorResult<Self> {
@@ -55,71 +46,12 @@ impl XSecSystemProtector {
     pub async fn check_availability(&self) -> XSecProtectorResult<()> {
         let mut probe = [0; KEY_SIZE];
         SecureArray::from_slice_mut(&mut probe).map_err(map_secure_memory_error)?;
-
-        let connection = Connection::system().await.map_err(map_protector_error)?;
-        let proxy = AuthorityProxy::new(&connection)
-            .await
-            .map_err(map_protector_error)?;
-        let actions = proxy
-            .enumerate_actions("")
-            .await
-            .map_err(map_protector_error)?;
-        if actions
-            .iter()
-            .any(|action| action.action_id == POLKIT_ACTION)
-        {
-            Ok(())
-        } else {
-            Err(XSecProtectorError::NotConfigured)
-        }
+        Ok(())
     }
 
     pub async fn delete(&self) -> XSecProtectorResult<()> {
         self.key()?.take();
         Ok(())
-    }
-
-    async fn authorize(&self) -> XSecProtectorResult<()> {
-        let connection = Connection::system().await.map_err(map_protector_error)?;
-        let proxy = AuthorityProxy::new(&connection)
-            .await
-            .map_err(map_protector_error)?;
-        let subject = if let Some(bus_name) = connection.unique_name() {
-            let mut details = HashMap::new();
-            details.insert(
-                "name".to_string(),
-                OwnedValue::from(Str::from(bus_name.as_str())),
-            );
-            Subject {
-                subject_kind: "system-bus-name".to_string(),
-                subject_details: details,
-            }
-        } else {
-            Subject::new_for_owner(std::process::id(), None, None).map_err(map_protector_error)?
-        };
-        let details = HashMap::new();
-        let result = proxy
-            .check_authorization(
-                &subject,
-                POLKIT_ACTION,
-                &details,
-                CheckAuthorizationFlags::AllowUserInteraction.into(),
-                "",
-            )
-            .await
-            .map_err(map_protector_error)?;
-
-        if result.is_authorized {
-            Ok(())
-        } else if result
-            .details
-            .get("polkit.dismissed")
-            .is_some_and(|value| !value.is_empty())
-        {
-            Err(XSecProtectorError::AuthenticationCancelled)
-        } else {
-            Err(XSecProtectorError::AuthenticationFailed)
-        }
     }
 
     fn key(&self) -> XSecProtectorResult<MutexGuard<'_, Option<StoredKey>>> {
@@ -175,8 +107,11 @@ impl XSecProtector for XSecSystemProtector {
         payload: &'a [u8],
     ) -> XSecProtectorResult<SecretBox<[u8; KEY_SIZE]>> {
         let key_id = parse_payload(payload, &self.identity)?;
-        self.authorize().await?;
         self.copy_key(key_id)
+    }
+
+    async fn delete(&self) -> XSecProtectorResult<()> {
+        XSecSystemProtector::delete(self).await
     }
 }
 
@@ -225,19 +160,13 @@ fn map_secure_memory_error(_error: secure_types::Error) -> XSecProtectorError {
     XSecProtectorError::Internal
 }
 
-fn map_protector_error(
-    _error: impl std::error::Error + Send + Sync + 'static,
-) -> XSecProtectorError {
-    XSecProtectorError::Unavailable
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn payload_round_trip() {
-        let protector = XSecSystemProtector::new("test-account");
+        let protector = XSecSystemProtector::new("test-account").unwrap();
         let key = SecretBox::new(Box::new([7; KEY_SIZE]));
         let payload = protector.wrap_key(&key).await.unwrap();
         let restored = XSecSystemProtector::from_payload(&payload).unwrap();
@@ -254,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_key_invalidates_previous_payload() {
-        let protector = XSecSystemProtector::new("test-account");
+        let protector = XSecSystemProtector::new("test-account").unwrap();
         let first = protector
             .wrap_key(&SecretBox::new(Box::new([1; KEY_SIZE])))
             .await
@@ -273,7 +202,7 @@ mod tests {
 
     #[test]
     fn key_is_not_available_to_a_new_protector() {
-        let protector = XSecSystemProtector::new("test-account");
+        let protector = XSecSystemProtector::new("test-account").unwrap();
         let key_id = [0; KEY_ID_SIZE];
         assert!(matches!(
             protector.copy_key(&key_id),
@@ -283,7 +212,7 @@ mod tests {
 
     #[test]
     fn parser_rejects_wrong_identity_and_platform() {
-        let protector = XSecSystemProtector::new("test-account");
+        let protector = XSecSystemProtector::new("test-account").unwrap();
         let mut payload = Vec::with_capacity(PAYLOAD_SIZE);
         payload.extend_from_slice(MAGIC);
         payload.extend_from_slice(&PAYLOAD_VERSION.to_be_bytes());
@@ -306,7 +235,7 @@ mod tests {
 
     #[test]
     fn parser_rejects_invalid_framing_and_version() {
-        let protector = XSecSystemProtector::new("test-account");
+        let protector = XSecSystemProtector::new("test-account").unwrap();
         let mut payload = Vec::with_capacity(PAYLOAD_SIZE);
         payload.extend_from_slice(MAGIC);
         payload.extend_from_slice(&PAYLOAD_VERSION.to_be_bytes());

@@ -30,6 +30,8 @@ pub enum XSecProtectorError {
     InvalidData,
     #[error("key protector failed")]
     Internal,
+    #[error("key protector resource cleanup failed")]
+    ResourceCleanupFailed,
 }
 
 pub type XSecProtectorResult<T> = Result<T, XSecProtectorError>;
@@ -44,6 +46,9 @@ pub trait XSecProtector: Send + Sync {
         &'a self,
         payload: &'a [u8],
     ) -> impl Future<Output = XSecProtectorResult<SecretBox<[u8; 32]>>> + Send + 'a;
+    fn delete(&self) -> impl Future<Output = XSecProtectorResult<()>> + Send + '_ {
+        async { Ok(()) }
+    }
 }
 
 #[cfg(feature = "password-protector")]

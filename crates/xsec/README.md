@@ -20,15 +20,16 @@ metadata.
 
 ## Features and platform notes
 
-The default feature set enables `file-storage`, `password-protector`, and
-`system-protector`. Each feature can be disabled for smaller or more portable
-builds. The system protector selects the backend for the target platform:
+The default feature set enables `file-storage` and `password-protector`.
+`system-protector` is opt-in and controls only whether `XSecSystemProtector` is
+compiled and exported. It does not add system-specific methods to `XSec`.
+When enabled, it selects the backend for the target platform:
 
 | Platform | System protection |
 | --- | --- |
 | Windows | Windows Hello credential signing |
 | macOS | Secure Enclave and Keychain access control |
-| Linux | polkit authorization and protected process memory |
+| Linux | Session-only protected process memory; no user-presence or persistence guarantee |
 | Other targets | `Unavailable` |
 
 Real prompts, credentials, entitlements, desktop agents, and secure hardware

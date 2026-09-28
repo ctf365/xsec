@@ -5,7 +5,7 @@ async fn main() -> XSecResult<()> {
     let storage = XSecFileStorage::new("target/system.xsec.keys");
 
     if std::env::args().any(|arg| arg == "--delete") {
-        let protector = XSecSystemProtector::new("xsec-example-system");
+        let protector = XSecSystemProtector::new("xsec-example-system")?;
         protector.delete().await?;
         println!("Deleted the system protector key.");
         return Ok(());
@@ -15,9 +15,10 @@ async fn main() -> XSecResult<()> {
     xsec.load(storage).await?;
 
     let result = if xsec.is_initialized() {
-        xsec.unlock_system().await
+        let protector = XSecSystemProtector::new("xsec-example-system")?;
+        xsec.unlock(&protector).await
     } else {
-        let protector = XSecSystemProtector::new("xsec-example-system");
+        let protector = XSecSystemProtector::new("xsec-example-system")?;
         xsec.create(&protector).await
     };
     if let Err(error) = result {

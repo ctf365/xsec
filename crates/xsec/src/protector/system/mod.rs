@@ -39,23 +39,13 @@ pub struct XSecSystemProtector {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 impl XSecSystemProtector {
-    pub fn new(identity: impl Into<String>) -> Self {
-        let identity = hash_identity(&identity.into());
-        Self {
-            _identity: identity,
-        }
-    }
-
-    pub(crate) fn from_payload(_payload: &[u8]) -> crate::XSecProtectorResult<Self> {
-        Err(crate::XSecProtectorError::Unavailable)
+    pub fn new(identity: impl Into<String>) -> crate::XSecProtectorResult<Self> {
+        Ok(Self {
+            _identity: hash_identity(&identity.into()),
+        })
     }
 
     pub async fn check_availability(&self) -> crate::XSecProtectorResult<()> {
-        let _ = self;
-        Err(crate::XSecProtectorError::Unavailable)
-    }
-
-    pub async fn delete(&self) -> crate::XSecProtectorResult<()> {
         let _ = self;
         Err(crate::XSecProtectorError::Unavailable)
     }
@@ -78,7 +68,6 @@ impl crate::XSecProtector for XSecSystemProtector {
         &'a self,
         _payload: &'a [u8],
     ) -> crate::XSecProtectorResult<secrecy::SecretBox<[u8; 32]>> {
-        let _ = (self, _payload);
         Err(crate::XSecProtectorError::Unavailable)
     }
 }

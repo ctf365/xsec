@@ -80,9 +80,9 @@ pub struct XSecSystemProtector {
 }
 
 impl XSecSystemProtector {
-    pub fn new(identity: impl Into<String>) -> Self {
+    pub fn new(identity: impl Into<String>) -> XSecProtectorResult<Self> {
         let identity = hash_identity(&identity.into());
-        Self::from_identity(identity)
+        Ok(Self::from_identity(identity))
     }
 
     pub(crate) fn from_payload(payload: &[u8]) -> XSecProtectorResult<Self> {
@@ -209,6 +209,10 @@ impl XSecProtector for XSecSystemProtector {
             MacosEnvelope::parse(&payload, &identity)?.open(&shared_secret)
         })
         .await
+    }
+
+    async fn delete(&self) -> XSecProtectorResult<()> {
+        XSecSystemProtector::delete(self).await
     }
 }
 
@@ -569,7 +573,7 @@ mod tests {
 
     #[test]
     fn identity_is_not_exposed_in_key_tag() {
-        let protector = XSecSystemProtector::new("account/secret-name");
+        let protector = XSecSystemProtector::new("account/secret-name").unwrap();
         let key_tag = String::from_utf8(protector.key_tag).unwrap();
 
         assert!(key_tag.starts_with(KEY_PREFIX));

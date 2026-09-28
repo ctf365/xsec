@@ -12,19 +12,21 @@ use crate::{XSecProtectorError, XSecProtectorResult};
 const MAGIC: &[u8; 6] = b"XSecSP";
 const LINUX_MAGIC: &[u8; 6] = b"XSecLP";
 const MACOS_MAGIC: &[u8; 6] = b"XSecMP";
-const ENVELOPE_VERSION: u16 = 2;
+const ENVELOPE_VERSION: u16 = 3;
 const KEY_SIZE: usize = 32;
 const IDENTITY_SIZE: usize = 32;
+const RESOURCE_ID_SIZE: usize = 16;
 const CHALLENGE_SIZE: usize = 16;
 const SALT_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
 const TAG_SIZE: usize = 16;
 const KDF_INFO: &[u8] = b"xsec:windows-hello:kek";
 const HEADER_SIZE: usize =
-    MAGIC.len() + 2 + IDENTITY_SIZE + CHALLENGE_SIZE + SALT_SIZE + NONCE_SIZE;
+    MAGIC.len() + 2 + IDENTITY_SIZE + RESOURCE_ID_SIZE + CHALLENGE_SIZE + SALT_SIZE + NONCE_SIZE;
 const PAYLOAD_SIZE: usize = HEADER_SIZE + KEY_SIZE + TAG_SIZE;
 
 pub(super) type Identity = [u8; IDENTITY_SIZE];
+pub(super) type ResourceId = [u8; RESOURCE_ID_SIZE];
 
 pub(super) struct Challenge([u8; CHALLENGE_SIZE]);
 
@@ -51,6 +53,7 @@ impl WindowsHelloPrf {
 
 pub(super) struct SystemEnvelope<'a> {
     identity: &'a Identity,
+    resource_id: &'a ResourceId,
     challenge: &'a [u8],
     salt: &'a [u8],
     nonce: &'a [u8],
@@ -101,7 +104,15 @@ impl<'a> SystemEnvelope<'a> {
             return Err(XSecProtectorError::KeyInvalidated);
         }
 
-        let challenge_start = identity_end;
+        let resource_start = identity_end;
+        let resource_end = resource_start + RESOURCE_ID_SIZE;
+        let resource_id = payload
+            .get(resource_start..resource_end)
+            .ok_or(XSecProtectorError::InvalidData)?
+            .try_into()
+            .map_err(|_| XSecProtectorError::InvalidData)?;
+
+        let challenge_start = resource_end;
         let challenge_end = challenge_start + CHALLENGE_SIZE;
         let salt_start = challenge_end;
         let salt_end = salt_start + SALT_SIZE;
@@ -110,6 +121,7 @@ impl<'a> SystemEnvelope<'a> {
 
         Ok(Self {
             identity,
+            resource_id,
             challenge: &payload[challenge_start..challenge_end],
             salt: &payload[salt_start..salt_end],
             nonce: &payload[nonce_start..nonce_end],
@@ -124,6 +136,10 @@ impl<'a> SystemEnvelope<'a> {
 
     pub(super) fn challenge(&self) -> &[u8] {
         self.challenge
+    }
+
+    pub(super) fn resource_id(&self) -> &ResourceId {
+        self.resource_id
     }
 
     pub(super) fn open(
@@ -158,6 +174,7 @@ impl<'a> SystemEnvelope<'a> {
 pub(super) fn seal_key(
     key: &SecretBox<[u8; KEY_SIZE]>,
     identity: &Identity,
+    resource_id: &ResourceId,
     challenge: &Challenge,
     prf: &WindowsHelloPrf,
 ) -> XSecProtectorResult<Vec<u8>> {
@@ -170,6 +187,7 @@ pub(super) fn seal_key(
     envelope.extend_from_slice(MAGIC);
     envelope.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
     envelope.extend_from_slice(identity);
+    envelope.extend_from_slice(resource_id);
     envelope.extend_from_slice(challenge.as_bytes());
     envelope.extend_from_slice(&salt);
     envelope.extend_from_slice(&nonce);
@@ -242,7 +260,7 @@ mod tests {
     #[test]
     fn envelope_round_trip() {
         let (key, identity, challenge, prf) = fixture();
-        let payload = seal_key(&key, &identity, &challenge, &prf).unwrap();
+        let payload = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
         let envelope = SystemEnvelope::parse(&payload, &identity).unwrap();
         let stored_envelope = SystemEnvelope::parse_stored(&payload).unwrap();
         let opened = envelope.open(&prf).unwrap();
@@ -255,7 +273,7 @@ mod tests {
     #[test]
     fn wrong_signature_cannot_open_envelope() {
         let (key, identity, challenge, prf) = fixture();
-        let payload = seal_key(&key, &identity, &challenge, &prf).unwrap();
+        let payload = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
         let envelope = SystemEnvelope::parse(&payload, &identity).unwrap();
         let wrong_prf = WindowsHelloPrf::from_signature(b"attacker-controlled-signature");
 
@@ -268,7 +286,7 @@ mod tests {
     #[test]
     fn wrong_identity_is_rejected_before_opening() {
         let (key, identity, challenge, prf) = fixture();
-        let payload = seal_key(&key, &identity, &challenge, &prf).unwrap();
+        let payload = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
 
         assert!(matches!(
             SystemEnvelope::parse(&payload, &hash_identity("another-account")),
@@ -279,7 +297,7 @@ mod tests {
     #[test]
     fn authenticated_fields_reject_tampering() {
         let (key, identity, challenge, prf) = fixture();
-        let payload = seal_key(&key, &identity, &challenge, &prf).unwrap();
+        let payload = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
 
         for offset in [
             CHALLENGE_OFFSET,
@@ -304,7 +322,7 @@ mod tests {
     #[test]
     fn parser_rejects_invalid_framing_and_version() {
         let (key, identity, challenge, prf) = fixture();
-        let payload = seal_key(&key, &identity, &challenge, &prf).unwrap();
+        let payload = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
 
         assert!(matches!(
             SystemEnvelope::parse(&payload[..payload.len() - 1], &identity),
@@ -333,7 +351,7 @@ mod tests {
         ));
 
         let mut wrong_version = payload;
-        wrong_version[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&3u16.to_be_bytes());
+        wrong_version[MAGIC.len()..MAGIC.len() + 2].copy_from_slice(&4u16.to_be_bytes());
         assert!(matches!(
             SystemEnvelope::parse(&wrong_version, &identity),
             Err(XSecProtectorError::Unsupported)
@@ -350,8 +368,8 @@ mod tests {
     #[test]
     fn each_seal_uses_fresh_salt_and_nonce() {
         let (key, identity, challenge, prf) = fixture();
-        let first = seal_key(&key, &identity, &challenge, &prf).unwrap();
-        let second = seal_key(&key, &identity, &challenge, &prf).unwrap();
+        let first = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
+        let second = seal_key(&key, &identity, &[5; RESOURCE_ID_SIZE], &challenge, &prf).unwrap();
 
         assert_ne!(
             &first[SALT_OFFSET..SALT_OFFSET + SALT_SIZE],

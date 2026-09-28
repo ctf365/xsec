@@ -14,8 +14,8 @@ cargo test --workspace
 
 工作区目前包含两个 crate：`xsec` 是可复用的加密库，`xsec-cli` 是面向
 dotenv 文件的命令行前端。库的 system protector 已提供 Windows、macOS 和
-Linux backend；平台提示框、entitlement、polkit 和安全硬件行为必须在对应
-的真实平台上验证。
+Linux backend；Linux 使用进程会话内的 protector，不提供持久化或用户在场验证。
+平台提示框、entitlement 和安全硬件行为必须在对应的真实平台上验证。
 
 ## CLI 快速开始
 

@@ -15,8 +15,9 @@ cargo test --workspace
 The workspace currently contains two crates. `xsec` is the reusable library;
 `xsec-cli` is the dotenv-oriented command-line frontend. The library's system
 protector has backends for Windows, macOS, and Linux. Platform prompts,
-entitlements, polkit, and secure-hardware behavior require validation on the
-corresponding real platform.
+entitlements, and secure-hardware behavior require validation on the
+corresponding real platform. Linux uses a process-session protector without
+persistence or user-presence verification.
 
 ## CLI quick start
 
