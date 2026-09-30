@@ -49,6 +49,8 @@ pub(crate) enum CliError {
     PasswordInputTooLarge,
     #[error("`--password` can only be used with the password protector")]
     UnexpectedPasswordInput,
+    #[error("`--identity` is required when using the system protector")]
+    SystemIdentityRequired,
     #[error("storage has not been initialized at `{0}`")]
     StorageNotInitialized(String),
     #[error("select a configured protector with `--protector`; available: {0}")]

@@ -15,7 +15,10 @@ pub use xsec::{XSec, XSecStatus};
 pub use protector::XSecPasswordProtector;
 
 #[cfg(feature = "system-protector")]
-pub use protector::XSecSystemProtector;
+pub use protector::{
+    SystemAuthenticationPolicy, SystemBackendPreference, SystemProtectorBackend,
+    SystemProtectorOptions, XSecSystemProtector,
+};
 
 #[cfg(feature = "file-storage")]
 pub use storage::XSecFileStorage;

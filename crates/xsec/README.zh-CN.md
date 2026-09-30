@@ -22,17 +22,45 @@ XSec 是一个跨平台数据加密库。它生成并管理数据加密密钥（
 
 默认启用 `file-storage` 和 `password-protector`。`system-protector` 默认关闭，
 启用后只控制是否编译并导出 `XSecSystemProtector`，不会给 `XSec` 增加专属方法。
-启用时，system protector 根据目标平台选择 backend：
+启用后，`XSecSystemProtector` 使用
+[`hardware-enclave`](https://github.com/godaddy/hardware-enclave) 管理平台密钥并执行 ECIES；
+XSec 仍负责自己的 identity 绑定 payload 和错误模型，`XSecProtector` trait 不变。
+平台后端如下：
 
 | 平台 | 系统保护方式 |
 | --- | --- |
-| Windows | Windows Hello credential 签名 |
-| macOS | Secure Enclave 和 Keychain 访问控制 |
-| Linux | 仅当前进程会话内的受保护内存；不保证用户在场验证或持久化 |
+| Windows | TPM 2.0/CNG；默认请求平台用户验证 |
+| macOS | Secure Enclave；默认请求平台用户验证 |
+| Linux | 默认系统密钥环；可选原生 TPM 2.0 或 WSL TPM bridge |
 | 其他目标 | 返回 `Unavailable` |
 
-真实提示框、credential、entitlement、桌面 agent 和安全硬件必须在目标设备上
-测试；交叉编译成功不等于运行时验证通过。
+`system-protector-linux-tpm` feature 用于启用原生 Linux TPM 后端。当前
+`hardware-enclave` feature 依赖图下，Linux 启用 `system-protector` 需要 D-Bus 和
+TPM 2.0 开发库；即使未启用原生 TPM 后端，上游仍会编译 TSS 依赖。Linux 后端不执行
+生物识别或用户在场验证。系统密钥环可以保护静态密钥，但不等同于硬件隔离。
+
+`XSecSystemProtector::with_options` 可要求硬件后端、强制使用 Linux 系统密钥环，或选择
+认证策略。`HardwareOnly` 在后端为密钥环或 Windows DPAPI 时会失败；默认的 `Automatic`
+允许 Linux 回退到系统密钥环。`PlatformDefault` 在 macOS 和 Windows 请求用户验证，在
+Linux 不弹出验证提示。
+
+```rust
+use xsec::{
+    SystemAuthenticationPolicy, SystemBackendPreference, SystemProtectorOptions,
+    XSecSystemProtector,
+};
+
+let protector = XSecSystemProtector::with_options(
+    "my-application",
+    SystemProtectorOptions {
+        backend: SystemBackendPreference::HardwareOnly,
+        authentication: SystemAuthenticationPolicy::PlatformDefault,
+    },
+)?;
+```
+
+真实提示框、凭据、桌面 agent 和安全硬件必须在目标设备上测试；交叉编译成功不等于
+运行时验证通过。
 
 `XSecStorage` 和 `XSecProtector` 只定义抽象接口。具体实现位于对应子模块，并通过 feature 按需编译：`storage/file.rs`、`protector/password.rs`。
 

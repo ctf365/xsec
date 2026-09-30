@@ -23,18 +23,50 @@ metadata.
 The default feature set enables `file-storage` and `password-protector`.
 `system-protector` is opt-in and controls only whether `XSecSystemProtector` is
 compiled and exported. It does not add system-specific methods to `XSec`.
-When enabled, it selects the backend for the target platform:
+When enabled, `XSecSystemProtector` delegates key management and ECIES to
+[`hardware-enclave`](https://github.com/godaddy/hardware-enclave). XSec keeps
+its own identity-bound payload and error model. The `XSecProtector` trait stays
+unchanged. Backends are selected as follows:
 
 | Platform | System protection |
 | --- | --- |
-| Windows | Windows Hello credential signing |
-| macOS | Secure Enclave and Keychain access control |
-| Linux | Session-only protected process memory; no user-presence or persistence guarantee |
+| Windows | TPM 2.0 through CNG; platform-default user verification |
+| macOS | Secure Enclave; platform-default user verification |
+| Linux | System keyring by default; optional native TPM 2.0 or WSL TPM bridge |
 | Other targets | `Unavailable` |
 
-Real prompts, credentials, entitlements, desktop agents, and secure hardware
-must be tested on the target device; a successful cross-compilation is not
-runtime evidence.
+Enable `system-protector-linux-tpm` to compile the native Linux TPM backend.
+Linux builds using `system-protector` require the system D-Bus and TPM 2.0
+development libraries with the current `hardware-enclave` dependency feature
+graph. The `system-protector-linux-tpm` feature enables native TPM selection;
+the upstream crate currently compiles the TSS dependency even when that backend
+is disabled. Linux backends do not enforce biometric or user-presence
+verification. The keyring backend protects keys at rest but is not hardware
+isolation.
+
+`XSecSystemProtector::with_options` can require a hardware backend, force the
+Linux keyring, or select an authentication policy. `HardwareOnly` fails closed
+if the selected backend is a keyring or Windows DPAPI fallback. The default
+`Automatic` policy permits Linux keyring fallback. `PlatformDefault` requests
+user verification on macOS and Windows and no prompt on Linux.
+
+Real prompts, credentials, desktop agents, and secure hardware must be tested
+on the target device; a successful cross-compilation is not runtime evidence.
+
+```rust
+use xsec::{
+    SystemAuthenticationPolicy, SystemBackendPreference, SystemProtectorOptions,
+    XSecSystemProtector,
+};
+
+let protector = XSecSystemProtector::with_options(
+    "my-application",
+    SystemProtectorOptions {
+        backend: SystemBackendPreference::HardwareOnly,
+        authentication: SystemAuthenticationPolicy::PlatformDefault,
+    },
+)?;
+```
 
 ## Quick start
 

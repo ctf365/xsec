@@ -14,10 +14,13 @@ cargo test --workspace
 
 The workspace currently contains two crates. `xsec` is the reusable library;
 `xsec-cli` is the dotenv-oriented command-line frontend. The library's system
-protector has backends for Windows, macOS, and Linux. Platform prompts,
-entitlements, and secure-hardware behavior require validation on the
-corresponding real platform. Linux uses a process-session protector without
-persistence or user-presence verification.
+protector can use the `hardware-enclave` backends for Windows TPM 2.0, macOS
+Secure Enclave, and Linux TPM/system keyring. Linux keyring protects keys at
+rest but does not provide hardware isolation or user-presence verification.
+Enable `system-protector-linux-tpm` to select native Linux TPM support. Platform
+prompts and hardware behavior require validation on the corresponding device;
+see [`crates/xsec/README.md`](crates/xsec/README.md) for build requirements and
+backend options.
 
 ## CLI quick start
 

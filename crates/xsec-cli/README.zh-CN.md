@@ -54,10 +54,14 @@ xsec del API_TOKEN -f .xsec
 
 ```text
 xsec protector add system --identity your-project-id
-xsec run --protector system -- your-command
+xsec run --protector system --identity your-project-id -- your-command
 ```
 
-identity 只在添加 protector 时需要，之后从受保护的 key storage 中恢复其哈希。不要使用绝对路径生成 identity，否则移动项目会改变它。
+使用 system protector 解锁时，需要提供添加 protector 时使用的相同 `--identity`。不要使用绝对路径生成 identity，否则移动项目会改变它。
+
+Linux 默认使用系统密钥环。启用 `system-protector-linux-tpm` feature 后，可在 TPM 2.0
+可用时使用原生 TPM。Linux 的 D-Bus/TPM 开发库要求及密钥环较低的硬件保护等级见
+XSec crate 文档。
 
 ## 运行时行为
 
@@ -84,7 +88,8 @@ xsec protector remove system
 ```
 
 需要时可使用 `--unlock-with <password|system>` 选择解锁方式，并使用
-`--password` 从标准输入读取密码。最后一个 protector 不能删除；密码 protector
+`--password` 从标准输入读取密码。选择 `system` 时还需提供添加时使用的 identity。
+最后一个 protector 不能删除；密码 protector
 的替换或删除在实现 DEK 轮换和密文迁移前会被拒绝。
 
 ## 存储和恢复注意事项

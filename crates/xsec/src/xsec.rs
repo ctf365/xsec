@@ -244,7 +244,7 @@ impl<S: XSecStorage> XSec<S> {
             if kind != "system" {
                 return Err(XSecError::ProtectorChangeRequiresKeyRotation);
             }
-            #[cfg(all(feature = "system-protector", not(target_os = "linux")))]
+            #[cfg(feature = "system-protector")]
             {
                 let record = metadata
                     .protectors
@@ -255,7 +255,7 @@ impl<S: XSecStorage> XSec<S> {
                     .delete()
                     .await?;
             }
-            #[cfg(any(not(feature = "system-protector"), target_os = "linux"))]
+            #[cfg(not(feature = "system-protector"))]
             return Err(XSecError::ProtectorChangeRequiresKeyRotation);
             let mut next = metadata.clone();
             next.protectors.retain(|record| record.kind != kind);

@@ -7,6 +7,9 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/nashaofu/xsec.git"
 
+[features]
+system-protector-linux-tpm = ["xsec/system-protector-linux-tpm"]
+
 [[bin]]
 name = "xsec"
 path = "src/main.rs"

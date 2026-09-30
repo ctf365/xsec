@@ -79,15 +79,14 @@ platform, add system protection afterward with a stable logical identity:
 
 ```text
 xsec protector add system --identity your-project-id
-xsec run --protector system -- your-command
+xsec run --protector system --identity your-project-id -- your-command
 ```
 
 Adding the protector first unlocks the existing storage with its password and
 then wraps the same data-encryption key with system protection. Pass
-`--password` to read that password from standard input. The identity is
-required only when adding the system protector. Later commands restore its
-hash from the protected key storage. Do not derive the identity from an
-absolute path; moving the project must not change it.
+`--password` to read that password from standard input. Supply the same
+`--identity` whenever you unlock with the system protector. Do not derive the
+identity from an absolute path; moving the project must not change it.
 
 List the configured protectors without unlocking the storage:
 
@@ -104,11 +103,14 @@ xsec protector remove system
 The CLI automatically uses the other configured protector. Use
 `--unlock-with <password|system>` to select one explicitly when needed, and
 `--password` when the selected password protector must read from standard
-input. The last protector cannot be removed. Removing or replacing a password
+input. When selecting `system`, also pass the identity used when adding it.
+The last protector cannot be removed. Removing or replacing a password
 protector is rejected until XSec has a data-key rotation and ciphertext
 migration API; otherwise an older authenticated metadata snapshot would restore
-the old password. On Linux, the CLI also rejects adding the session-only system
-protector because its in-memory key cannot survive process exit.
+the old password. Linux uses the system keyring by default; builds that enable
+`system-protector-linux-tpm` can select native TPM 2.0 when available. See the
+XSec crate README for Linux D-Bus and TPM development-library requirements and
+the keyring backend's lower hardware-assurance level.
 
 On macOS, the executable must be signed with a provisioning profile that
 authorizes its `com.apple.application-identifier` entitlement. An ad-hoc signed

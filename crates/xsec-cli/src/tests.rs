@@ -99,7 +99,18 @@ fn parses_add_system_protector() {
             }),
         }) if identity == "project-id" && storage == std::path::Path::new(".xsec.custom.keys")
     ));
-    assert!(Cli::try_parse_from(["xsec", "get", "TOKEN", "--identity", "project-id"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "xsec",
+            "get",
+            "TOKEN",
+            "--protector",
+            "system",
+            "--identity",
+            "project-id"
+        ])
+        .is_ok()
+    );
 }
 
 #[test]
@@ -124,6 +135,7 @@ fn parses_remove_protector() {
                 storage,
                 unlock_with: Some(ProtectorKind::Password),
                 password: true,
+                identity: None,
             }),
         }) if storage == std::path::Path::new(".xsec.custom.keys")
     ));

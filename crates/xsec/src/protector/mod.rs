@@ -61,4 +61,7 @@ pub use password::XSecPasswordProtector;
 mod system;
 
 #[cfg(feature = "system-protector")]
-pub use system::XSecSystemProtector;
+pub use system::{
+    SystemAuthenticationPolicy, SystemBackendPreference, SystemProtectorBackend,
+    SystemProtectorOptions, XSecSystemProtector,
+};

@@ -136,6 +136,9 @@ pub(crate) struct UnlockArgs {
     /// Protector to use when more than one is configured.
     #[arg(long, value_enum)]
     pub(crate) protector: Option<ProtectorKind>,
+    /// Stable logical identity used when unlocking with the system protector.
+    #[arg(long)]
+    pub(crate) identity: Option<String>,
     /// Read the password from standard input instead of prompting.
     #[arg(long)]
     pub(crate) password: bool,
@@ -200,6 +203,9 @@ pub(crate) struct RemoveProtectorArgs {
     /// Protector used to authorize the removal.
     #[arg(long, value_enum)]
     pub(crate) unlock_with: Option<ProtectorKind>,
+    /// Stable logical identity when authorizing with the system protector.
+    #[arg(long)]
+    pub(crate) identity: Option<String>,
     /// Read the password from standard input instead of prompting.
     #[arg(long)]
     pub(crate) password: bool,

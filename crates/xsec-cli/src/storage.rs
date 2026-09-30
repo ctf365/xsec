@@ -4,7 +4,7 @@ use std::{
 };
 
 use secrecy::{ExposeSecret, SecretBox};
-use xsec::{XSec, XSecFileStorage, XSecPasswordProtector};
+use xsec::{XSec, XSecFileStorage, XSecPasswordProtector, XSecSystemProtector};
 use zeroize::Zeroize;
 
 use crate::{
@@ -28,7 +28,7 @@ pub(crate) async fn load_and_unlock(args: &UnlockArgs) -> CliResult<FileXSec> {
     if !configured.iter().any(|value| value == kind.as_str()) {
         return Err(CliError::ProtectorNotConfigured(kind.as_str().to_owned()));
     }
-    unlock_with(&mut xsec, kind, args.password).await?;
+    unlock_with(&mut xsec, kind, args.password, args.identity.as_deref()).await?;
     Ok(xsec)
 }
 
@@ -36,6 +36,7 @@ pub(crate) async fn unlock_with(
     xsec: &mut FileXSec,
     kind: ProtectorKind,
     password_stdin: bool,
+    identity: Option<&str>,
 ) -> CliResult<()> {
     match kind {
         ProtectorKind::Password => {
@@ -46,7 +47,9 @@ pub(crate) async fn unlock_with(
             if password_stdin {
                 return Err(CliError::UnexpectedPasswordInput);
             }
-            xsec.unlock_system().await?;
+            let identity = identity.ok_or(CliError::SystemIdentityRequired)?;
+            let protector = XSecSystemProtector::new(identity)?;
+            xsec.unlock(&protector).await?;
         }
     }
     Ok(())
